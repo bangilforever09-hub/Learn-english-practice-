@@ -41,6 +41,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavHostController
@@ -51,6 +53,7 @@ import androidx.navigation.compose.rememberNavController
 import java.io.File
 import java.io.PrintWriter
 import java.io.StringWriter
+import java.time.LocalDate
 
 class MainActivity : ComponentActivity() {
 
@@ -151,7 +154,7 @@ private enum class Tab(val route: String, val label: String, val icon: ImageVect
     Practice("practice", "Latihan", Icons.Filled.Star),
     Checklist("checklist", "Checklist", Icons.Filled.CheckCircle),
     Notes("notes", "Catatan", Icons.Filled.Edit),
-    Options("options", "Pengaturan", Icons.Filled.Settings)
+    Options("options", "Setelan", Icons.Filled.Settings)
 }
 
 private fun navigateToTab(navController: NavHostController, route: String) {
@@ -169,6 +172,10 @@ fun AppRoot() {
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = backStackEntry?.destination
+
+    val progressVm: ProgressViewModel = viewModel()
+    val rows by progressVm.rows.collectAsStateWithLifecycle()
+    val stats = computeStats(rows, LocalDate.now())
 
     Scaffold(
         bottomBar = {
@@ -190,7 +197,10 @@ fun AppRoot() {
             modifier = Modifier.padding(innerPadding)
         ) {
             composable(ROUTE_TODAY) {
-                TodayScreen(onStartPractice = { navigateToTab(navController, Tab.Chat.route) })
+                TodayScreen(
+                    stats = stats,
+                    onStartPractice = { navigateToTab(navController, Tab.Chat.route) }
+                )
             }
             composable(Tab.Chat.route) {
                 PlaceholderScreen("Chat", "Ngobrol dengan AI (teks + suara) akan dibuat di tahap e.")
@@ -199,20 +209,20 @@ fun AppRoot() {
                 PlaceholderScreen("Latihan", "Kartu kosakata dan kuis akan dibuat di tahap c.")
             }
             composable(Tab.Checklist.route) {
-                PlaceholderScreen("Checklist", "Checklist harian dan streak akan dibuat di tahap b.")
+                ChecklistScreen(stats = stats, onToggle = progressVm::toggle)
             }
             composable(Tab.Notes.route) {
                 PlaceholderScreen("Catatan", "Catatan dan pengingat review akan dibuat di tahap d.")
             }
             composable(Tab.Options.route) {
-                PlaceholderScreen("Pengaturan", "Pengaturan dan API key Gemini akan ditambah nanti.")
+                PlaceholderScreen("Setelan", "Pengaturan dan API key Gemini akan ditambah nanti.")
             }
         }
     }
 }
 
 @Composable
-fun TodayScreen(onStartPractice: () -> Unit) {
+fun TodayScreen(stats: ProgressStats, onStartPractice: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -237,10 +247,20 @@ fun TodayScreen(onStartPractice: () -> Unit) {
         ) {
             Text("Mulai Latihan", style = MaterialTheme.typography.headlineSmall)
         }
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(24.dp))
         Text(
-            "Streak: 0 hari (aktif di tahap b)",
+            text = if (stats.streak > 0) {
+                "🔥 Streak: ${stats.streak} hari"
+            } else {
+                "Mulai streak-mu hari ini"
+            },
             style = MaterialTheme.typography.titleMedium
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Tugas hari ini: ${stats.today.doneCount()} dari 3",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
 }
