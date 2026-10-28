@@ -179,6 +179,7 @@ fun AppRoot() {
     val progressVm: ProgressViewModel = viewModel()
     val vocabVm: VocabViewModel = viewModel()
     val notesVm: NotesViewModel = viewModel()
+    val chatVm: ChatViewModel = viewModel()
     val rows by progressVm.rows.collectAsStateWithLifecycle()
     val stats = computeStats(rows, LocalDate.now())
 
@@ -204,11 +205,14 @@ fun AppRoot() {
             composable(ROUTE_TODAY) {
                 TodayScreen(
                     stats = stats,
-                    onStartPractice = { navigateToTab(navController, Tab.Practice.route) }
+                    onStartPractice = { navigateToTab(navController, Tab.Chat.route) }
                 )
             }
             composable(Tab.Chat.route) {
-                PlaceholderScreen("Chat", "Ngobrol dengan AI (teks + suara) akan dibuat di tahap e.")
+                ChatScreen(
+                    vm = chatVm,
+                    onOpenSettings = { navigateToTab(navController, Tab.Options.route) }
+                )
             }
             composable(Tab.Practice.route) {
                 PracticeScreen(vm = vocabVm)
@@ -220,7 +224,7 @@ fun AppRoot() {
                 NotesScreen(vm = notesVm)
             }
             composable(Tab.Options.route) {
-                PlaceholderScreen("Setelan", "Pengaturan dan API key Gemini akan ditambah nanti.")
+                SettingsScreen(vm = chatVm)
             }
         }
     }
