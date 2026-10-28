@@ -67,6 +67,9 @@ class MainActivity : ComponentActivity() {
             return
         }
 
+        Reminders.createChannel(this)
+        Reminders.schedule(this)
+
         enableEdgeToEdge()
         setContent {
             LearnEnglishTheme {
@@ -175,6 +178,7 @@ fun AppRoot() {
 
     val progressVm: ProgressViewModel = viewModel()
     val vocabVm: VocabViewModel = viewModel()
+    val notesVm: NotesViewModel = viewModel()
     val rows by progressVm.rows.collectAsStateWithLifecycle()
     val stats = computeStats(rows, LocalDate.now())
 
@@ -213,7 +217,7 @@ fun AppRoot() {
                 ChecklistScreen(stats = stats, onToggle = progressVm::toggle)
             }
             composable(Tab.Notes.route) {
-                PlaceholderScreen("Catatan", "Catatan dan pengingat review akan dibuat di tahap d.")
+                NotesScreen(vm = notesVm)
             }
             composable(Tab.Options.route) {
                 PlaceholderScreen("Setelan", "Pengaturan dan API key Gemini akan ditambah nanti.")
