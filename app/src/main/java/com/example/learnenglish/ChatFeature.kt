@@ -60,6 +60,7 @@ import com.example.learnenglish.data.AppDatabase
 import com.example.learnenglish.data.DailyProgress
 import com.example.learnenglish.data.Note
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -72,7 +73,9 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
 import java.net.URL
+import java.net.UnknownHostException
 import java.time.LocalDate
 import java.util.Locale
 
@@ -82,6 +85,7 @@ private val Context.chatDataStore: DataStore<Preferences> by preferencesDataStor
 private val KEY_API = stringPreferencesKey("gemini_api_key")
 private val KEY_MODEL = stringPreferencesKey("gemini_model")
 private const val DEFAULT_MODEL = "gemini-2.5-flash"
+private const val FALLBACK_MODEL = "gemini-2.5-flash-lite"
 
 // ---------- Data ----------
 
@@ -148,7 +152,13 @@ private class AiReply(
     val raw: String
 )
 
-private class GeminiOutcome(val reply: AiReply?, val error: String?)
+private class GeminiOutcome(
+    val reply: AiReply?,
+    val error: String?,
+    val retryable: Boolean = false,
+    val stop: Boolean = false,
+    val usedModel: String = ""
+)
 
 private class ModelsOutcome(val names: List<String>, val error: String?)
 
@@ -320,7 +330,7 @@ private fun httpRequest(method: String, url: String, apiKey: String, body: Strin
     try {
         conn.requestMethod = method
         conn.connectTimeout = 15000
-        conn.readTimeout = 60000
+        conn.readTimeout = 45000
         conn.setRequestProperty("x-goog-api-key", apiKey)
         if (body != null) {
             conn.setRequestProperty("Content-Type", "application/json")
@@ -401,32 +411,82 @@ private fun parseReply(raw: String): AiReply {
     return AiReply(reply = s, koreksi = "", natural = "", raw = raw)
 }
 
+private fun cleanModel(model: String): String =
+    model.trim().removePrefix("models/").replace(" ", "")
+
+private fun callOnce(
+    apiKey: String,
+    model: String,
+    system: String,
+    history: List<ChatMessage>
+): GeminiOutcome {
+    return try {
+        val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent"
+        var res = httpRequest("POST", url, apiKey, buildRequest(system, history, true))
+        if (res.code == 400 && !apiErrorMessage(res.body).contains("API key", ignoreCase = true)) {
+            res = httpRequest("POST", url, apiKey, buildRequest(system, history, false))
+        }
+        val code = res.code
+        if (code in 200..299) {
+            val text = extractText(res.body)
+            if (text.isBlank()) {
+                GeminiOutcome(
+                    null,
+                    "AI tidak memberi jawaban (mungkin terblokir filter keamanan). Coba kalimat lain.",
+                    stop = true
+                )
+            } else {
+                GeminiOutcome(parseReply(text), null, usedModel = model)
+            }
+        } else {
+            val msg = apiErrorMessage(res.body)
+            val keyProblem = code == 401 || code == 403 ||
+                (code == 400 && msg.contains("API key", ignoreCase = true))
+            GeminiOutcome(
+                reply = null,
+                error = friendlyError(code, msg),
+                retryable = code == 429 || code in 500..599,
+                stop = keyProblem || code == 400
+            )
+        }
+    } catch (e: SocketTimeoutException) {
+        GeminiOutcome(null, "Gemini terlalu lama menjawab (timeout).")
+    } catch (e: UnknownHostException) {
+        GeminiOutcome(null, "Tidak ada koneksi internet.", stop = true)
+    } catch (e: Exception) {
+        GeminiOutcome(null, "Gagal terhubung ke Gemini (" + e.javaClass.simpleName + ").")
+    }
+}
+
 private suspend fun askGemini(
     apiKey: String,
     model: String,
     system: String,
     history: List<ChatMessage>
 ): GeminiOutcome = withContext(Dispatchers.IO) {
-    try {
-        val safeModel = model.trim().removePrefix("models/").replace(" ", "")
-        val url = "https://generativelanguage.googleapis.com/v1beta/models/$safeModel:generateContent"
-        var res = httpRequest("POST", url, apiKey, buildRequest(system, history, true))
-        if (res.code == 400 && !apiErrorMessage(res.body).contains("API key", ignoreCase = true)) {
-            res = httpRequest("POST", url, apiKey, buildRequest(system, history, false))
-        }
-        if (res.code !in 200..299) {
-            GeminiOutcome(null, friendlyError(res.code, apiErrorMessage(res.body)))
-        } else {
-            val text = extractText(res.body)
-            if (text.isBlank()) {
-                GeminiOutcome(null, "AI tidak memberi jawaban (mungkin terblokir filter keamanan). Coba kalimat lain.")
-            } else {
-                GeminiOutcome(parseReply(text), null)
-            }
-        }
-    } catch (e: Exception) {
-        GeminiOutcome(null, "Tidak ada koneksi internet atau server tidak merespons. Coba lagi.")
+    val primary = cleanModel(model)
+    val candidates = if (primary == FALLBACK_MODEL) {
+        listOf(primary)
+    } else {
+        listOf(primary, FALLBACK_MODEL)
     }
+    var last = GeminiOutcome(null, "Terjadi kesalahan yang tidak diketahui.")
+    for (m in candidates) {
+        var attempt = 0
+        while (attempt < 2) {
+            attempt++
+            val out = callOnce(apiKey, m, system, history)
+            if (out.reply != null) return@withContext out
+            last = out
+            if (out.stop) return@withContext out
+            if (!out.retryable) break
+            if (attempt < 2) delay(2500)
+        }
+    }
+    GeminiOutcome(
+        null,
+        (last.error ?: "Terjadi kesalahan.") + "\nSudah dicoba ulang dan memakai model cadangan."
+    )
 }
 
 private fun fetchModels(apiKey: String): ModelsOutcome {
@@ -606,7 +666,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 raw = reply.raw,
                 userText = text
             )
-            _chat.update { it.copy(messages = it.messages + aiMsg, loading = false) }
+            val usedFallback = outcome.usedModel.isNotBlank() &&
+                outcome.usedModel != cleanModel(modelName)
+            val info = if (usedFallback) {
+                "Model utama gagal, memakai model cadangan (" + outcome.usedModel + ")."
+            } else {
+                ""
+            }
+            _chat.update {
+                it.copy(messages = it.messages + aiMsg, loading = false, notice = info)
+            }
             if (_chat.value.speakReplies) speaker.speak(reply.reply)
             markConversationIfEnough()
         }
@@ -856,7 +925,7 @@ private fun ConversationView(vm: ChatViewModel, chat: ChatState) {
         }
         if (chat.loading) {
             Text(
-                "AI sedang menulis…",
+                "AI sedang menulis… (kalau Google sibuk, aplikasi mencoba ulang sendiri)",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 4.dp)
@@ -967,6 +1036,7 @@ private fun MessageItem(
 
 @Composable
 fun SettingsScreen(vm: ChatViewModel) {
+    val context = LocalContext.current
     val savedKey by vm.apiKey.collectAsStateWithLifecycle()
     val savedModel by vm.model.collectAsStateWithLifecycle()
     val ui by vm.settingsUi.collectAsStateWithLifecycle()
@@ -974,6 +1044,8 @@ fun SettingsScreen(vm: ChatViewModel) {
     var key by remember(savedKey) { mutableStateOf(savedKey) }
     var model by remember(savedModel) { mutableStateOf(savedModel) }
     var showKey by remember { mutableStateOf(false) }
+    var reminderHour by remember { mutableStateOf(Reminders.getHour(context)) }
+    var reminderMsg by remember { mutableStateOf("") }
 
     Column(
         modifier = Modifier
@@ -1066,6 +1138,56 @@ fun SettingsScreen(vm: ChatViewModel) {
         }
         if (ui.message.isNotEmpty()) {
             Text(ui.message, style = MaterialTheme.typography.bodyMedium)
+        }
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text("Pengingat harian", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Jam pengingat: " + reminderHour.toString().padStart(2, '0') + ":00",
+                    style = MaterialTheme.typography.bodyLarge
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            reminderHour = (reminderHour + 23) % 24
+                            reminderMsg = ""
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) { Text("− 1 jam") }
+                    OutlinedButton(
+                        onClick = {
+                            reminderHour = (reminderHour + 1) % 24
+                            reminderMsg = ""
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) { Text("+ 1 jam") }
+                }
+                Button(
+                    onClick = {
+                        Reminders.setHour(context, reminderHour)
+                        reminderMsg = "Tersimpan ✅ Pengingat berikutnya pukul " +
+                            reminderHour.toString().padStart(2, '0') + ":00."
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Simpan jam")
+                }
+                if (reminderMsg.isNotEmpty()) {
+                    Text(reminderMsg, style = MaterialTheme.typography.bodyMedium)
+                }
+                Text(
+                    "Waktu tampil bisa meleset beberapa menit karena penghematan baterai HP.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
 
         Card(modifier = Modifier.fillMaxWidth()) {
