@@ -174,6 +174,7 @@ fun AppRoot() {
     val currentDestination = backStackEntry?.destination
 
     val progressVm: ProgressViewModel = viewModel()
+    val vocabVm: VocabViewModel = viewModel()
     val rows by progressVm.rows.collectAsStateWithLifecycle()
     val stats = computeStats(rows, LocalDate.now())
 
@@ -199,14 +200,14 @@ fun AppRoot() {
             composable(ROUTE_TODAY) {
                 TodayScreen(
                     stats = stats,
-                    onStartPractice = { navigateToTab(navController, Tab.Chat.route) }
+                    onStartPractice = { navigateToTab(navController, Tab.Practice.route) }
                 )
             }
             composable(Tab.Chat.route) {
                 PlaceholderScreen("Chat", "Ngobrol dengan AI (teks + suara) akan dibuat di tahap e.")
             }
             composable(Tab.Practice.route) {
-                PlaceholderScreen("Latihan", "Kartu kosakata dan kuis akan dibuat di tahap c.")
+                PracticeScreen(vm = vocabVm)
             }
             composable(Tab.Checklist.route) {
                 ChecklistScreen(stats = stats, onToggle = progressVm::toggle)
