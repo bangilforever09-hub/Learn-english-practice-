@@ -37,7 +37,20 @@ object Reminders {
     private const val CHANNEL_ID = "daily_review"
     private const val WORK_NAME = "daily_reminder"
     private const val NOTIFICATION_ID = 1001
-    private const val REMINDER_HOUR = 19
+    private const val PREFS = "reminder_prefs"
+    private const val KEY_HOUR = "hour"
+    private const val DEFAULT_HOUR = 19
+
+    fun getHour(context: Context): Int =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(KEY_HOUR, DEFAULT_HOUR)
+
+    fun setHour(context: Context, hour: Int) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putInt(KEY_HOUR, hour.coerceIn(0, 23))
+            .apply()
+        schedule(context, replace = true)
+    }
 
     fun createChannel(context: Context) {
         val manager = context.getSystemService(NotificationManager::class.java)
@@ -50,9 +63,9 @@ object Reminders {
         manager.createNotificationChannel(channel)
     }
 
-    fun schedule(context: Context) {
+    fun schedule(context: Context, replace: Boolean = false) {
         val now = LocalDateTime.now()
-        var next = now.toLocalDate().atTime(REMINDER_HOUR, 0)
+        var next = now.toLocalDate().atTime(getHour(context), 0)
         if (!next.isAfter(now)) {
             next = next.plusDays(1)
         }
@@ -62,11 +75,13 @@ object Reminders {
             .setInitialDelay(delayMinutes, TimeUnit.MINUTES)
             .build()
 
-        WorkManager.getInstance(context).enqueueUniquePeriodicWork(
-            WORK_NAME,
-            ExistingPeriodicWorkPolicy.KEEP,
-            request
-        )
+        val policy = if (replace) {
+            ExistingPeriodicWorkPolicy.CANCEL_AND_REENQUEUE
+        } else {
+            ExistingPeriodicWorkPolicy.KEEP
+        }
+
+        WorkManager.getInstance(context).enqueueUniquePeriodicWork(WORK_NAME, policy, request)
     }
 
     fun showNow(context: Context) {
