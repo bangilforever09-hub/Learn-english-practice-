@@ -13,8 +13,8 @@ android {
         applicationId = "com.example.learnenglish"
         minSdk = 26
         targetSdk = 34
-        versionCode = 4
-        versionName = "0.4"
+        versionCode = 5
+        versionName = "0.5"
     }
 
     signingConfigs {
@@ -66,4 +66,6 @@ dependencies {
     ksp("androidx.room:room-compiler:2.6.1")
 
     implementation("androidx.work:work-runtime-ktx:2.9.1")
+
+    implementation("androidx.datastore:datastore-preferences:1.1.1")
 }
