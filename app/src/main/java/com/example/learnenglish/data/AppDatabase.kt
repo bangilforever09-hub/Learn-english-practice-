@@ -10,6 +10,8 @@ import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 @Entity(tableName = "daily_progress")
@@ -32,9 +34,54 @@ interface DailyProgressDao {
     suspend fun upsert(item: DailyProgress)
 }
 
-@Database(entities = [DailyProgress::class], version = 1, exportSchema = false)
+@Entity(tableName = "vocab_progress")
+data class VocabProgress(
+    @PrimaryKey val wordId: Int,
+    val box: Int,
+    val nextReview: Long,
+    val lastAnswered: Long,
+    val correctCount: Int,
+    val wrongCount: Int
+)
+
+@Dao
+interface VocabProgressDao {
+    @Query("SELECT * FROM vocab_progress")
+    fun observeAll(): Flow<List<VocabProgress>>
+
+    @Query("SELECT * FROM vocab_progress WHERE wordId = :id LIMIT 1")
+    suspend fun getById(id: Int): VocabProgress?
+
+    @Query("SELECT COUNT(*) FROM vocab_progress WHERE lastAnswered = :day")
+    suspend fun countAnsweredOn(day: Long): Int
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(item: VocabProgress)
+}
+
+private val MIGRATION_1_2 = object : Migration(1, 2) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `vocab_progress` (" +
+                "`wordId` INTEGER NOT NULL, " +
+                "`box` INTEGER NOT NULL, " +
+                "`nextReview` INTEGER NOT NULL, " +
+                "`lastAnswered` INTEGER NOT NULL, " +
+                "`correctCount` INTEGER NOT NULL, " +
+                "`wrongCount` INTEGER NOT NULL, " +
+                "PRIMARY KEY(`wordId`))"
+        )
+    }
+}
+
+@Database(
+    entities = [DailyProgress::class, VocabProgress::class],
+    version = 2,
+    exportSchema = false
+)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun dailyProgressDao(): DailyProgressDao
+    abstract fun vocabProgressDao(): VocabProgressDao
 
     companion object {
         @Volatile
@@ -46,7 +93,7 @@ abstract class AppDatabase : RoomDatabase() {
                     context.applicationContext,
                     AppDatabase::class.java,
                     "learn_english.db"
-                ).build().also { instance = it }
+                ).addMigrations(MIGRATION_1_2).build().also { instance = it }
             }
     }
 }
