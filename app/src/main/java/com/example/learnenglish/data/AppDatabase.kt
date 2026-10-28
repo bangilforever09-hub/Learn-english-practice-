@@ -3,6 +3,7 @@ package com.example.learnenglish.data
 import android.content.Context
 import androidx.room.Dao
 import androidx.room.Database
+import androidx.room.Delete
 import androidx.room.Entity
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
@@ -10,6 +11,7 @@ import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.Update
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
@@ -59,6 +61,35 @@ interface VocabProgressDao {
     suspend fun upsert(item: VocabProgress)
 }
 
+@Entity(tableName = "notes")
+data class Note(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val type: String,
+    val text: String,
+    val extra: String,
+    val createdDay: Long,
+    val reviewsDone: Int,
+    val nextReview: Long
+)
+
+@Dao
+interface NoteDao {
+    @Query("SELECT * FROM notes ORDER BY createdDay DESC, id DESC")
+    fun observeAll(): Flow<List<Note>>
+
+    @Query("SELECT COUNT(*) FROM notes WHERE nextReview <= :today")
+    suspend fun countDue(today: Long): Int
+
+    @Insert
+    suspend fun insert(note: Note): Long
+
+    @Update
+    suspend fun update(note: Note)
+
+    @Delete
+    suspend fun delete(note: Note)
+}
+
 private val MIGRATION_1_2 = object : Migration(1, 2) {
     override fun migrate(db: SupportSQLiteDatabase) {
         db.execSQL(
@@ -74,14 +105,30 @@ private val MIGRATION_1_2 = object : Migration(1, 2) {
     }
 }
 
+private val MIGRATION_2_3 = object : Migration(2, 3) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `notes` (" +
+                "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                "`type` TEXT NOT NULL, " +
+                "`text` TEXT NOT NULL, " +
+                "`extra` TEXT NOT NULL, " +
+                "`createdDay` INTEGER NOT NULL, " +
+                "`reviewsDone` INTEGER NOT NULL, " +
+                "`nextReview` INTEGER NOT NULL)"
+        )
+    }
+}
+
 @Database(
-    entities = [DailyProgress::class, VocabProgress::class],
-    version = 2,
+    entities = [DailyProgress::class, VocabProgress::class, Note::class],
+    version = 3,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun dailyProgressDao(): DailyProgressDao
     abstract fun vocabProgressDao(): VocabProgressDao
+    abstract fun noteDao(): NoteDao
 
     companion object {
         @Volatile
@@ -93,7 +140,7 @@ abstract class AppDatabase : RoomDatabase() {
                     context.applicationContext,
                     AppDatabase::class.java,
                     "learn_english.db"
-                ).addMigrations(MIGRATION_1_2).build().also { instance = it }
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build().also { instance = it }
             }
     }
 }
