@@ -90,6 +90,27 @@ interface NoteDao {
     suspend fun delete(note: Note)
 }
 
+@Entity(tableName = "chat_stats")
+data class ChatStat(
+    @PrimaryKey val day: Long,
+    val userMessages: Int = 0,
+    val userWords: Int = 0,
+    val mistakes: Int = 0,
+    val goodMessages: Int = 0
+)
+
+@Dao
+interface ChatStatDao {
+    @Query("SELECT * FROM chat_stats ORDER BY day DESC LIMIT 400")
+    fun observeAll(): Flow<List<ChatStat>>
+
+    @Query("SELECT * FROM chat_stats WHERE day = :day LIMIT 1")
+    suspend fun getByDay(day: Long): ChatStat?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(item: ChatStat)
+}
+
 private val MIGRATION_1_2 = object : Migration(1, 2) {
     override fun migrate(db: SupportSQLiteDatabase) {
         db.execSQL(
@@ -120,15 +141,30 @@ private val MIGRATION_2_3 = object : Migration(2, 3) {
     }
 }
 
+private val MIGRATION_3_4 = object : Migration(3, 4) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `chat_stats` (" +
+                "`day` INTEGER NOT NULL, " +
+                "`userMessages` INTEGER NOT NULL, " +
+                "`userWords` INTEGER NOT NULL, " +
+                "`mistakes` INTEGER NOT NULL, " +
+                "`goodMessages` INTEGER NOT NULL, " +
+                "PRIMARY KEY(`day`))"
+        )
+    }
+}
+
 @Database(
-    entities = [DailyProgress::class, VocabProgress::class, Note::class],
-    version = 3,
+    entities = [DailyProgress::class, VocabProgress::class, Note::class, ChatStat::class],
+    version = 4,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun dailyProgressDao(): DailyProgressDao
     abstract fun vocabProgressDao(): VocabProgressDao
     abstract fun noteDao(): NoteDao
+    abstract fun chatStatDao(): ChatStatDao
 
     companion object {
         @Volatile
@@ -140,7 +176,9 @@ abstract class AppDatabase : RoomDatabase() {
                     context.applicationContext,
                     AppDatabase::class.java,
                     "learn_english.db"
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build().also { instance = it }
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                    .build()
+                    .also { instance = it }
             }
     }
 }
