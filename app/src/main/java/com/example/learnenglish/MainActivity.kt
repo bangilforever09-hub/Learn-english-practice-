@@ -1,102 +1,329 @@
 package com.example.learnenglish
 
-import android.Manifest
-import android.content.pm.PackageManager
-import android.os.Build
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
+import android.os.Bundle
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.TextView
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Face
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.example.learnenglish.data.Note
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NavDestination.Companion.hierarchy
+import androidx.navigation.NavGraph.Companion.findStartDestination
+import androidx.navigation.NavHostController
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.navigation.compose.rememberNavController
+import kotlinx.coroutines.delay
+import java.io.File
+import java.io.PrintWriter
+import java.io.StringWriter
 import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 
-private val NOTE_TYPES = listOf("Kata", "Kalimat", "Kesalahan")
+class MainActivity : ComponentActivity() {
 
-private fun noteEmoji(type: String): String = when (type) {
-    "Kata" -> "📖"
-    "Kalimat" -> "💬"
-    else -> "⚠️"
+    override fun onCreate(savedInstanceState: Bundle?) {
+        installCrashLogger()
+        super.onCreate(savedInstanceState)
+
+        val crashFile = File(filesDir, CRASH_FILE)
+        if (crashFile.exists()) {
+            showCrashReport(crashFile)
+            return
+        }
+
+        ThemeSettings.load(this)
+        Reminders.createChannel(this)
+        Reminders.schedule(this)
+
+        enableEdgeToEdge()
+        setContent {
+            AppTheme {
+                AppRoot()
+            }
+        }
+    }
+
+    private fun installCrashLogger() {
+        val file = File(filesDir, CRASH_FILE)
+        val oldHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            try {
+                val sw = StringWriter()
+                throwable.printStackTrace(PrintWriter(sw))
+                file.writeText(sw.toString())
+            } catch (e: Exception) {
+                // abaikan
+            }
+            oldHandler?.uncaughtException(thread, throwable)
+        }
+    }
+
+    private fun showCrashReport(crashFile: File) {
+        val lines = crashFile.readText().lines()
+        val important = lines.filter {
+            val t = it.trim()
+            t.isNotEmpty() && !t.startsWith("at ") && !t.startsWith("...")
+        }
+        val report = "APLIKASI BERHENTI (CRASH)\n" +
+            "Screenshot layar ini dan kirim ke Claude.\n\n" +
+            "RINGKASAN:\n" + important.take(8).joinToString("\n") +
+            "\n\nDETAIL AWAL:\n" + lines.take(15).joinToString("\n")
+
+        val textView = TextView(this).apply {
+            text = report
+            textSize = 11f
+            setTextIsSelectable(true)
+        }
+        val scroll = ScrollView(this).apply {
+            addView(textView)
+        }
+        val button = android.widget.Button(this).apply {
+            text = "Hapus laporan, lalu coba lagi"
+            setOnClickListener {
+                crashFile.delete()
+                recreate()
+            }
+        }
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(32, 120, 32, 32)
+            addView(button)
+            addView(scroll)
+        }
+        setContentView(root)
+    }
+
+    companion object {
+        private const val CRASH_FILE = "crash.txt"
+    }
+}
+
+private const val ROUTE_TODAY = "today"
+private const val ROUTE_ACHIEVEMENTS = "achievements"
+
+private enum class Tab(val route: String, val label: String, val icon: ImageVector) {
+    Chat("chat", "Chat", Icons.Filled.Face),
+    Practice("practice", "Latihan", Icons.Filled.Star),
+    Checklist("checklist", "Checklist", Icons.Filled.CheckCircle),
+    Notes("notes", "Catatan", Icons.Filled.Edit),
+    Options("options", "Setelan", Icons.Filled.Settings)
+}
+
+private fun navigateToTab(navController: NavHostController, route: String) {
+    navController.navigate(route) {
+        popUpTo(navController.graph.findStartDestination().id) {
+            saveState = true
+        }
+        launchSingleTop = true
+        restoreState = true
+    }
 }
 
 @Composable
-private fun noteContainer(type: String): Color = when (type) {
-    "Kata" -> MaterialTheme.colorScheme.primaryContainer
-    "Kalimat" -> MaterialTheme.colorScheme.tertiaryContainer
-    else -> MaterialTheme.colorScheme.errorContainer
+fun AppRoot() {
+    val navController = rememberNavController()
+    val backStackEntry by navController.currentBackStackEntryAsState()
+    val currentDestination = backStackEntry?.destination
+
+    val progressVm: ProgressViewModel = viewModel()
+    val vocabVm: VocabViewModel = viewModel()
+    val notesVm: NotesViewModel = viewModel()
+    val chatVm: ChatViewModel = viewModel()
+    val achVm: AchievementsViewModel = viewModel()
+    val rows by progressVm.rows.collectAsStateWithLifecycle()
+    val ach by achVm.state.collectAsStateWithLifecycle()
+    val stats = computeStats(rows, LocalDate.now())
+
+    LaunchedEffect(Unit) {
+        achVm.attach(chatVm.chat)
+    }
+
+    Scaffold(
+        bottomBar = {
+            NavigationBar {
+                Tab.entries.forEach { tab ->
+                    NavigationBarItem(
+                        selected = currentDestination?.hierarchy?.any { it.route == tab.route } == true,
+                        onClick = { navigateToTab(navController, tab.route) },
+                        icon = { Icon(tab.icon, contentDescription = tab.label) },
+                        label = { Text(tab.label) }
+                    )
+                }
+            }
+        }
+    ) { innerPadding ->
+        NavHost(
+            navController = navController,
+            startDestination = ROUTE_TODAY,
+            modifier = Modifier.padding(innerPadding)
+        ) {
+            composable(ROUTE_TODAY) {
+                TodayScreen(
+                    stats = stats,
+                    level = ach.level,
+                    xp = ach.xp,
+                    onStartPractice = { navigateToTab(navController, Tab.Chat.route) },
+                    onOpenChat = { navigateToTab(navController, Tab.Chat.route) },
+                    onOpenPractice = { navigateToTab(navController, Tab.Practice.route) },
+                    onOpenNotes = { navigateToTab(navController, Tab.Notes.route) },
+                    onOpenAchievements = { navController.navigate(ROUTE_ACHIEVEMENTS) }
+                )
+            }
+            composable(ROUTE_ACHIEVEMENTS) {
+                AchievementsScreen(
+                    vm = achVm,
+                    onBack = { navController.popBackStack() }
+                )
+            }
+            composable(Tab.Chat.route) {
+                ChatPage(
+                    vm = chatVm,
+                    onOpenSettings = { navigateToTab(navController, Tab.Options.route) }
+                )
+            }
+            composable(Tab.Practice.route) {
+                PracticeScreen(vm = vocabVm)
+            }
+            composable(Tab.Checklist.route) {
+                ChecklistScreen(stats = stats, onToggle = progressVm::toggle)
+            }
+            composable(Tab.Notes.route) {
+                NotesScreen(vm = notesVm)
+            }
+            composable(Tab.Options.route) {
+                SettingsPage(vm = chatVm)
+            }
+        }
+    }
 }
 
 @Composable
-private fun noteAccent(type: String): Color = when (type) {
-    "Kata" -> MaterialTheme.colorScheme.primary
-    "Kalimat" -> MaterialTheme.colorScheme.tertiary
-    else -> MaterialTheme.colorScheme.error
+private fun TaskLine(
+    emoji: String,
+    title: String,
+    hint: String,
+    done: Boolean,
+    onClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        colors = CardDefaults.cardColors(
+            containerColor = if (done) {
+                MaterialTheme.colorScheme.tertiaryContainer
+            } else {
+                MaterialTheme.colorScheme.secondaryContainer
+            }
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(emoji, style = MaterialTheme.typography.headlineSmall)
+            Column(modifier = Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleSmall)
+                Text(hint, style = MaterialTheme.typography.bodySmall)
+            }
+            Text(
+                if (done) "✅ Selesai" else "⬜ Belum",
+                style = MaterialTheme.typography.labelLarge
+            )
+        }
+    }
 }
 
 @Composable
-private fun noteOnAccent(type: String): Color = when (type) {
-    "Kata" -> MaterialTheme.colorScheme.onPrimary
-    "Kalimat" -> MaterialTheme.colorScheme.onTertiary
-    else -> MaterialTheme.colorScheme.onError
-}
+fun TodayScreen(
+    stats: ProgressStats,
+    level: Int,
+    xp: Int,
+    onStartPractice: () -> Unit,
+    onOpenChat: () -> Unit,
+    onOpenPractice: () -> Unit,
+    onOpenNotes: () -> Unit,
+    onOpenAchievements: () -> Unit
+) {
+    var now by remember { mutableStateOf(LocalDateTime.now()) }
+    var tasksOpen by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            now = LocalDateTime.now()
+            delay(1000)
+        }
+    }
 
-private fun statusText(note: Note, today: Long): String = when {
-    note.nextReview == Long.MAX_VALUE -> "Review selesai ✅"
-    note.nextReview <= today -> "Perlu direview"
-    note.nextReview == today + 1 -> "Review besok"
-    else -> "Review ${note.nextReview - today} hari lagi"
-}
-
-@Composable
-fun NotesScreen(vm: NotesViewModel) {
-    val notes by vm.notes.collectAsStateWithLifecycle()
-    val today = LocalDate.now().toEpochDay()
-    val due = notes.filter { it.nextReview <= today }
-
-    var type by remember { mutableStateOf(NOTE_TYPES[0]) }
-    var text by remember { mutableStateOf("") }
-    var extra by remember { mutableStateOf("") }
+    val idLocale = Locale.forLanguageTag("id-ID")
+    val dateText = now.format(DateTimeFormatter.ofPattern("EEEE, d MMMM yyyy", idLocale))
+    val timeText = now.format(DateTimeFormatter.ofPattern("HH:mm"))
+    val greeting = when (now.hour) {
+        in 4..10 -> "Selamat pagi"
+        in 11..14 -> "Selamat siang"
+        in 15..17 -> "Selamat sore"
+        else -> "Selamat malam"
+    }
+    val done = stats.today.doneCount()
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .imePadding()
             .verticalScroll(rememberScrollState())
             .padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Box(
             modifier = Modifier
@@ -112,284 +339,148 @@ fun NotesScreen(vm: NotesViewModel) {
                 )
                 .padding(20.dp)
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Column {
                 Text(
-                    "📝 Catatan",
-                    style = MaterialTheme.typography.headlineSmall,
+                    greeting,
+                    style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onPrimary
                 )
                 Text(
-                    "${notes.size} catatan · ${due.size} perlu direview hari ini",
-                    style = MaterialTheme.typography.bodyMedium,
+                    timeText,
+                    style = MaterialTheme.typography.displayMedium,
                     color = MaterialTheme.colorScheme.onPrimary
                 )
-            }
-        }
-
-        ReminderCard()
-
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
-        ) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Text("🔔 Review hari ini", style = MaterialTheme.typography.titleMedium)
-                if (due.isEmpty()) {
-                    Text(
-                        "Tidak ada catatan yang perlu direview. 🎉",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                } else {
-                    due.forEach { note ->
-                        key(note.id) {
-                            DueItem(
-                                note = note,
-                                onRemember = { vm.review(note, true) },
-                                onForgot = { vm.review(note, false) }
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
-        ) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Text("✏️ Tambah catatan", style = MaterialTheme.typography.titleMedium)
-
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    NOTE_TYPES.forEach { t ->
-                        if (t == type) {
-                            Button(
-                                onClick = { type = t },
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = noteAccent(t),
-                                    contentColor = noteOnAccent(t)
-                                ),
-                                modifier = Modifier.weight(1f),
-                                contentPadding = PaddingValues(horizontal = 4.dp)
-                            ) { Text(noteEmoji(t) + " " + t) }
-                        } else {
-                            OutlinedButton(
-                                onClick = { type = t },
-                                modifier = Modifier.weight(1f),
-                                contentPadding = PaddingValues(horizontal = 4.dp)
-                            ) { Text(noteEmoji(t) + " " + t) }
-                        }
-                    }
-                }
-
-                OutlinedTextField(
-                    value = text,
-                    onValueChange = { text = it },
-                    label = {
-                        Text(
-                            when (type) {
-                                "Kata" -> "Kata baru"
-                                "Kalimat" -> "Kalimat"
-                                else -> "Kalimat yang salah"
-                            }
-                        )
-                    },
-                    modifier = Modifier.fillMaxWidth()
+                Text(
+                    dateText,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onPrimary
                 )
-                OutlinedTextField(
-                    value = extra,
-                    onValueChange = { extra = it },
-                    label = {
-                        Text(
-                            if (type == "Kesalahan") "Koreksi (versi yang benar)"
-                            else "Arti atau catatan (opsional)"
-                        )
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Button(
-                    onClick = {
-                        vm.addNote(type, text, extra)
-                        text = ""
-                        extra = ""
-                    },
-                    enabled = text.isNotBlank(),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = noteAccent(type),
-                        contentColor = noteOnAccent(type)
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(52.dp)
-                ) {
-                    Text("Simpan catatan")
-                }
             }
         }
 
         Text(
-            "📚 Semua catatan (${notes.size})",
-            style = MaterialTheme.typography.titleMedium
+            "Cukup mulai 10 menit. Sisanya mengikuti.",
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth()
         )
-        if (notes.isEmpty()) {
-            Text(
-                "Belum ada catatan. Simpan satu kata atau kalimat yang baru kamu pelajari.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        } else {
-            notes.forEach { note ->
-                key(note.id) {
-                    NoteRow(
-                        note = note,
-                        today = today,
-                        onDelete = { vm.delete(note) }
+
+        Button(
+            onClick = onStartPractice,
+            shape = RoundedCornerShape(20.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.secondary,
+                contentColor = MaterialTheme.colorScheme.onSecondary
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(88.dp)
+        ) {
+            Text("Mulai Latihan", style = MaterialTheme.typography.headlineSmall)
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Card(
+                modifier = Modifier.weight(1f),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.secondaryContainer
+                )
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("🔥 Streak", style = MaterialTheme.typography.labelLarge)
+                    Text("${stats.streak}", style = MaterialTheme.typography.headlineLarge)
+                    Text(
+                        if (stats.streak > 0) "hari beruntun" else "mulai hari ini",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+            Card(
+                modifier = Modifier
+                    .weight(1f)
+                    .clickable { tasksOpen = !tasksOpen },
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                )
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("✅ Tugas hari ini", style = MaterialTheme.typography.labelLarge)
+                    Text("$done/3", style = MaterialTheme.typography.headlineLarge)
+                    Text(
+                        if (tasksOpen) "ketuk untuk tutup ▴" else "ketuk untuk lihat ▾",
+                        style = MaterialTheme.typography.bodySmall
                     )
                 }
             }
         }
-    }
-}
 
-@Composable
-private fun ReminderCard() {
-    val context = LocalContext.current
-    val needsPermission = Build.VERSION.SDK_INT >= 33
-    var granted by remember {
-        mutableStateOf(
-            !needsPermission ||
-                ContextCompat.checkSelfPermission(
-                    context,
-                    Manifest.permission.POST_NOTIFICATIONS
-                ) == PackageManager.PERMISSION_GRANTED
-        )
-    }
-    val launcher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { isGranted -> granted = isGranted }
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text("⏰ Pengingat harian", style = MaterialTheme.typography.titleMedium)
-            if (granted) {
-                Text(
-                    "Pengingat aktif. Atur jamnya di tab Setelan.",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-                OutlinedButton(onClick = { Reminders.showNow(context) }) {
-                    Text("Tes pengingat sekarang")
-                }
-            } else {
-                Text(
-                    "Izinkan notifikasi supaya pengingat review bisa muncul.",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-                Button(onClick = { launcher.launch(Manifest.permission.POST_NOTIFICATIONS) }) {
-                    Text("Izinkan notifikasi")
-                }
-                Text(
-                    "Kalau tombol tidak bereaksi, buka Setelan HP, Aplikasi, Learn English Practice, lalu Notifikasi.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun DueItem(note: Note, onRemember: () -> Unit, onForgot: () -> Unit) {
-    var shown by remember { mutableStateOf(false) }
-    val needsReveal = note.extra.isNotBlank()
-    val revealed = shown || !needsReveal
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-    ) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            Text(
-                noteEmoji(note.type) + " " + note.type +
-                    " · review ke-" + (note.reviewsDone + 1) + " dari " + REVIEW_DAYS.size,
-                style = MaterialTheme.typography.labelMedium,
-                color = noteAccent(note.type)
-            )
-            Text(note.text, style = MaterialTheme.typography.titleLarge)
-            if (revealed && needsReveal) {
-                Text(note.extra, style = MaterialTheme.typography.bodyLarge)
-            }
-            if (!revealed) {
-                OutlinedButton(
-                    onClick = { shown = true },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Lihat jawaban")
-                }
-            } else {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    OutlinedButton(onClick = onForgot, modifier = Modifier.weight(1f)) {
-                        Text("Belum ingat")
-                    }
-                    Button(onClick = onRemember, modifier = Modifier.weight(1f)) {
-                        Text("Ingat")
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun NoteRow(note: Note, today: Long, onDelete: () -> Unit) {
-    var confirm by remember { mutableStateOf(false) }
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = noteContainer(note.type))
-    ) {
-        Column(
+        LinearProgressIndicator(
+            progress = { done / 3f },
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(14.dp)
-        ) {
-            Text(
-                noteEmoji(note.type) + " " + note.type + " · " + statusText(note, today),
-                style = MaterialTheme.typography.labelMedium,
-                color = noteAccent(note.type)
-            )
-            Text(note.text, style = MaterialTheme.typography.titleMedium)
-            if (note.extra.isNotBlank()) {
+                .height(10.dp)
+        )
+
+        if (tasksOpen) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                TaskLine(
+                    emoji = "💬",
+                    title = "1 percakapan",
+                    hint = "Kirim 3 pesan di Chat",
+                    done = stats.today.conversationDone,
+                    onClick = onOpenChat
+                )
+                TaskLine(
+                    emoji = "📚",
+                    title = "10 kosakata",
+                    hint = "Jawab 10 kata di Latihan",
+                    done = stats.today.vocabDone,
+                    onClick = onOpenPractice
+                )
+                TaskLine(
+                    emoji = "📝",
+                    title = "1 catatan",
+                    hint = "Simpan 1 catatan di Catatan",
+                    done = stats.today.noteDone,
+                    onClick = onOpenNotes
+                )
                 Text(
-                    note.extra,
-                    style = MaterialTheme.typography.bodyMedium,
+                    "Kuning = belum, tosca = selesai. Ketuk tugas untuk langsung membukanya.",
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            if (!confirm) {
-                TextButton(onClick = { confirm = true }) { Text("Hapus") }
-            } else {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = onDelete) { Text("Ya, hapus") }
-                    TextButton(onClick = { confirm = false }) { Text("Batal") }
-                }
-            }
         }
+
+        OutlinedButton(
+            onClick = onOpenAchievements,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("🏅 Level $level · $xp XP — lihat pencapaian")
+        }
+    }
+}
+
+@Composable
+fun PlaceholderScreen(title: String, note: String) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(24.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(title, style = MaterialTheme.typography.headlineMedium)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            note,
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
     }
 }
