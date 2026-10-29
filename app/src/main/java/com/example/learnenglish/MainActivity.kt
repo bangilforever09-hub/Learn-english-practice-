@@ -1,6 +1,5 @@
 package com.example.learnenglish
 
-import android.os.Build
 import android.os.Bundle
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -8,14 +7,19 @@ import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Edit
@@ -23,22 +27,26 @@ import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -50,10 +58,14 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import kotlinx.coroutines.delay
 import java.io.File
 import java.io.PrintWriter
 import java.io.StringWriter
 import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
 
@@ -67,12 +79,13 @@ class MainActivity : ComponentActivity() {
             return
         }
 
+        ThemeSettings.load(this)
         Reminders.createChannel(this)
         Reminders.schedule(this)
 
         enableEdgeToEdge()
         setContent {
-            LearnEnglishTheme {
+            AppTheme {
                 AppRoot()
             }
         }
@@ -131,23 +144,6 @@ class MainActivity : ComponentActivity() {
     companion object {
         private const val CRASH_FILE = "crash.txt"
     }
-}
-
-@Composable
-fun LearnEnglishTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
-    content: @Composable () -> Unit
-) {
-    val colorScheme = when {
-        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            val context = LocalContext.current
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-        }
-        darkTheme -> darkColorScheme()
-        else -> lightColorScheme()
-    }
-
-    MaterialTheme(colorScheme = colorScheme, content = content)
 }
 
 private const val ROUTE_TODAY = "today"
@@ -224,7 +220,7 @@ fun AppRoot() {
                 NotesScreen(vm = notesVm)
             }
             composable(Tab.Options.route) {
-                SettingsScreen(vm = chatVm)
+                SettingsPage(vm = chatVm)
             }
         }
     }
@@ -232,44 +228,125 @@ fun AppRoot() {
 
 @Composable
 fun TodayScreen(stats: ProgressStats, onStartPractice: () -> Unit) {
+    var now by remember { mutableStateOf(LocalDateTime.now()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            now = LocalDateTime.now()
+            delay(1000)
+        }
+    }
+
+    val idLocale = Locale.forLanguageTag("id-ID")
+    val dateText = now.format(DateTimeFormatter.ofPattern("EEEE, d MMMM yyyy", idLocale))
+    val timeText = now.format(DateTimeFormatter.ofPattern("HH:mm"))
+    val greeting = when (now.hour) {
+        in 4..10 -> "Selamat pagi"
+        in 11..14 -> "Selamat siang"
+        in 15..17 -> "Selamat sore"
+        else -> "Selamat malam"
+    }
+    val done = stats.today.doneCount()
+
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(24.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally
+            .verticalScroll(rememberScrollState())
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Text("Hari ini", style = MaterialTheme.typography.headlineLarge)
-        Spacer(Modifier.height(8.dp))
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(
+                    Brush.linearGradient(
+                        listOf(
+                            MaterialTheme.colorScheme.primary,
+                            MaterialTheme.colorScheme.tertiary
+                        )
+                    ),
+                    RoundedCornerShape(24.dp)
+                )
+                .padding(20.dp)
+        ) {
+            Column {
+                Text(
+                    greeting,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onPrimary
+                )
+                Text(
+                    timeText,
+                    style = MaterialTheme.typography.displayMedium,
+                    color = MaterialTheme.colorScheme.onPrimary
+                )
+                Text(
+                    dateText,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onPrimary
+                )
+            }
+        }
+
         Text(
             "Cukup mulai 10 menit. Sisanya mengikuti.",
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth()
         )
-        Spacer(Modifier.height(32.dp))
+
         Button(
             onClick = onStartPractice,
+            shape = RoundedCornerShape(20.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.secondary,
+                contentColor = MaterialTheme.colorScheme.onSecondary
+            ),
             modifier = Modifier
                 .fillMaxWidth()
-                .height(96.dp)
+                .height(88.dp)
         ) {
             Text("Mulai Latihan", style = MaterialTheme.typography.headlineSmall)
         }
-        Spacer(Modifier.height(24.dp))
-        Text(
-            text = if (stats.streak > 0) {
-                "🔥 Streak: ${stats.streak} hari"
-            } else {
-                "Mulai streak-mu hari ini"
-            },
-            style = MaterialTheme.typography.titleMedium
-        )
-        Spacer(Modifier.height(4.dp))
-        Text(
-            "Tugas hari ini: ${stats.today.doneCount()} dari 3",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Card(
+                modifier = Modifier.weight(1f),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.secondaryContainer
+                )
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("🔥 Streak", style = MaterialTheme.typography.labelLarge)
+                    Text("${stats.streak}", style = MaterialTheme.typography.headlineLarge)
+                    Text(
+                        if (stats.streak > 0) "hari beruntun" else "mulai hari ini",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+            Card(
+                modifier = Modifier.weight(1f),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                )
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("✅ Tugas hari ini", style = MaterialTheme.typography.labelLarge)
+                    Text("$done/3", style = MaterialTheme.typography.headlineLarge)
+                    Text("selesai", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+
+        LinearProgressIndicator(
+            progress = { done / 3f },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(10.dp)
         )
     }
 }
