@@ -10,6 +10,7 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -36,6 +37,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -54,6 +56,8 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import com.example.learnenglish.data.AppDatabase
@@ -79,11 +83,13 @@ import java.net.UnknownHostException
 import java.time.LocalDate
 import java.util.Locale
 
-// ---------- Penyimpanan pengaturan (API key dan model) ----------
+// ---------- Penyimpanan pengaturan ----------
 
 private val Context.chatDataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
 private val KEY_API = stringPreferencesKey("gemini_api_key")
 private val KEY_MODEL = stringPreferencesKey("gemini_model")
+private val KEY_ACCENT = stringPreferencesKey("tts_accent")
+private val KEY_RATE = stringPreferencesKey("tts_rate")
 private const val DEFAULT_MODEL = "gemini-2.5-flash"
 private const val FALLBACK_MODEL = "gemini-2.5-flash-lite"
 
@@ -93,25 +99,62 @@ enum class ChatTopic(
     val label: String,
     val hint: String,
     val opening: String,
-    val instruction: String
+    val instruction: String,
+    val openingId: String,
+    val roleplay: Boolean = false
 ) {
     Daily(
         "Sehari-hari",
         "Obrolan santai: kegiatan, hobi, makanan",
         "Hi! How was your day so far?",
-        "Topic: everyday conversation (daily life, hobbies, food, plans)."
+        "Topic: everyday conversation (daily life, hobbies, food, plans).",
+        "Halo! Bagaimana harimu sejauh ini?"
     ),
     Work(
         "Kerja & karier",
         "Pekerjaan, rapat, wawancara kerja",
         "Hi! Can you tell me a little about your work, or the job you want?",
-        "Topic: work and career (daily tasks, meetings, job interviews, goals)."
+        "Topic: work and career (daily tasks, meetings, job interviews, goals).",
+        "Halo! Bisa ceritakan sedikit tentang pekerjaanmu, atau pekerjaan yang kamu inginkan?"
     ),
     Ielts(
         "IELTS/TOEFL speaking",
         "Latihan seperti ujian speaking",
         "Let's practice speaking for the exam. Part 1: can you tell me about your hometown?",
-        "Topic: IELTS/TOEFL speaking practice. Act like a friendly examiner. Start with Part 1 style questions, then Part 2 style topics where the learner speaks for longer, then Part 3 style discussion questions. Encourage answers of 3 to 5 sentences."
+        "Topic: IELTS/TOEFL speaking practice. Act like a friendly examiner. Start with Part 1 style questions, then Part 2 style topics where the learner speaks for longer, then Part 3 style discussion questions. Encourage answers of 3 to 5 sentences.",
+        "Mari berlatih speaking untuk ujian. Bagian 1: bisakah kamu bercerita tentang kota asalmu?"
+    ),
+    Restaurant(
+        "Restoran",
+        "Memesan makanan dan minuman",
+        "Good evening! Welcome to our restaurant. Do you have a reservation?",
+        "Role-play: you are a friendly waiter at a restaurant and the learner is a customer. Stay in character and move the scene forward naturally: greeting, seating, ordering, questions about the food, paying. If the learner writes in Indonesian, still answer in simple English.",
+        "Selamat malam! Selamat datang di restoran kami. Apakah Anda sudah reservasi?",
+        true
+    ),
+    Interview(
+        "Wawancara kerja",
+        "Menjawab pertanyaan pewawancara",
+        "Good morning! Thank you for coming. Please, have a seat. Can you tell me a little about yourself?",
+        "Role-play: you are a friendly but professional interviewer for a job interview and the learner is the candidate. Stay in character. Ask about background, strengths, weaknesses, experience, and goals, one question at a time. If the learner writes in Indonesian, still answer in simple English.",
+        "Selamat pagi! Terima kasih sudah datang. Silakan duduk. Bisa ceritakan sedikit tentang dirimu?",
+        true
+    ),
+    Airport(
+        "Bandara",
+        "Check-in, bagasi, dan keamanan",
+        "Hello, welcome to the check-in counter. May I see your passport, please? Where are you flying today?",
+        "Role-play: you are an airline check-in agent and the learner is a passenger. Stay in character: passport check, destination, luggage, seat choice, boarding time, gate. If the learner writes in Indonesian, still answer in simple English.",
+        "Halo, selamat datang di konter check-in. Boleh saya lihat paspor Anda? Anda terbang ke mana hari ini?",
+        true
+    ),
+    Doctor(
+        "Dokter",
+        "Menjelaskan keluhan kesehatan",
+        "Hello, please come in. I'm Doctor Lee. What brings you in today?",
+        "Role-play: you are a friendly doctor and the learner is a patient describing a simple health problem. Stay in character and ask simple questions about symptoms, how long, and daily habits. This is only language practice: never give real medical advice or diagnoses. If the learner writes in Indonesian, still answer in simple English.",
+        "Halo, silakan masuk. Saya Dokter Lee. Ada keluhan apa hari ini?",
+        true
     )
 }
 
@@ -119,6 +162,7 @@ data class ChatMessage(
     val id: Long,
     val fromUser: Boolean,
     val text: String,
+    val terjemahan: String = "",
     val koreksi: String = "",
     val lebihNatural: String = "",
     val raw: String = "",
@@ -132,6 +176,8 @@ data class ChatState(
     val messages: List<ChatMessage> = emptyList(),
     val loading: Boolean = false,
     val listening: Boolean = false,
+    val speaking: Boolean = false,
+    val callMode: Boolean = false,
     val partial: String = "",
     val notice: String = "",
     val speakReplies: Boolean = true
@@ -147,6 +193,7 @@ private class HttpResult(val code: Int, val body: String)
 
 private class AiReply(
     val reply: String,
+    val translation: String,
     val koreksi: String,
     val natural: String,
     val raw: String
@@ -167,6 +214,10 @@ private class ModelsOutcome(val names: List<String>, val error: String?)
 private class ChatSpeaker(application: Application) : TextToSpeech.OnInitListener {
     private var tts: TextToSpeech? = null
     private var ready = false
+    private var initDone = false
+    private var accent = "en-US"
+    private var rate = 1.0f
+    var doneCallback: (() -> Unit)? = null
 
     init {
         tts = TextToSpeech(application, this)
@@ -174,17 +225,47 @@ private class ChatSpeaker(application: Application) : TextToSpeech.OnInitListene
 
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
-            val result = tts?.setLanguage(Locale.US) ?: TextToSpeech.ERROR
-            ready = result != TextToSpeech.LANG_MISSING_DATA &&
-                result != TextToSpeech.LANG_NOT_SUPPORTED &&
-                result != TextToSpeech.ERROR
+            initDone = true
+            tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                override fun onStart(utteranceId: String?) {}
+
+                override fun onDone(utteranceId: String?) {
+                    doneCallback?.invoke()
+                }
+
+                @Deprecated("Deprecated in Java")
+                override fun onError(utteranceId: String?) {
+                    doneCallback?.invoke()
+                }
+            })
+            applyVoice()
         }
     }
 
-    fun speak(text: String) {
-        if (ready) {
-            tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "chat")
+    private fun applyVoice() {
+        var result = tts?.setLanguage(Locale.forLanguageTag(accent)) ?: TextToSpeech.ERROR
+        if (result == TextToSpeech.LANG_MISSING_DATA ||
+            result == TextToSpeech.LANG_NOT_SUPPORTED ||
+            result == TextToSpeech.ERROR
+        ) {
+            result = tts?.setLanguage(Locale.US) ?: TextToSpeech.ERROR
         }
+        ready = result != TextToSpeech.LANG_MISSING_DATA &&
+            result != TextToSpeech.LANG_NOT_SUPPORTED &&
+            result != TextToSpeech.ERROR
+        tts?.setSpeechRate(rate)
+    }
+
+    fun configure(newAccent: String, newRate: Float) {
+        accent = newAccent
+        rate = newRate
+        if (initDone) applyVoice()
+    }
+
+    fun speak(text: String, id: String): Boolean {
+        if (!ready) return false
+        val result = tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, id) ?: TextToSpeech.ERROR
+        return result == TextToSpeech.SUCCESS
     }
 
     fun stop() {
@@ -199,7 +280,7 @@ private class ChatSpeaker(application: Application) : TextToSpeech.OnInitListene
 
 private fun voiceErrorText(code: Int): String = when (code) {
     SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT ->
-        "Suara tidak terdengar. Ketuk 🎙 dan bicara lebih dekat ke mikrofon."
+        "Suara tidak terdengar. Bicara lebih dekat ke mikrofon."
     SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS ->
         "Izin mikrofon belum diberikan."
     SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT ->
@@ -214,7 +295,7 @@ private class VoiceInput(
     private val context: Context,
     private val onPartial: (String) -> Unit,
     private val onFinal: (String) -> Unit,
-    private val onFailure: (String) -> Unit
+    private val onFailure: (String, Boolean) -> Unit
 ) {
     private var recognizer: SpeechRecognizer? = null
 
@@ -234,14 +315,16 @@ private class VoiceInput(
 
             override fun onError(error: Int) {
                 if (error == SpeechRecognizer.ERROR_CLIENT) return
-                onFailure(voiceErrorText(error))
+                val quiet = error == SpeechRecognizer.ERROR_NO_MATCH ||
+                    error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
+                onFailure(voiceErrorText(error), quiet)
             }
 
             override fun onResults(results: Bundle?) {
                 val list = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 val text = list?.firstOrNull() ?: ""
                 if (text.isBlank()) {
-                    onFailure("Suara tidak terdengar jelas. Ketuk 🎙 dan coba lagi.")
+                    onFailure("Suara tidak terdengar jelas. Coba bicara lagi.", true)
                 } else {
                     onFinal(text)
                 }
@@ -282,6 +365,7 @@ ${topic.instruction}
 Use simple, clear English: short sentences and common words.
 Reply ONLY with one JSON object that has exactly these string keys:
 "reply": your natural reply in English, 1 to 3 short sentences. It MUST end with exactly one follow-up question.
+"terjemahan": the translation of your "reply" into natural Indonesian.
 "koreksi": a short note in simple Indonesian about grammar or word-choice mistakes in the learner's LAST message (name the mistake and the fix). If there are no mistakes, write "Tidak ada kesalahan. Bagus!".
 "lebih_natural": a more natural way to say the learner's LAST message in English. If it is already natural, repeat it unchanged.
 Do not write anything outside the JSON object.
@@ -399,6 +483,7 @@ private fun parseReply(raw: String): AiReply {
             if (reply.isNotEmpty()) {
                 return AiReply(
                     reply = reply,
+                    translation = o.optString("terjemahan").trim(),
                     koreksi = o.optString("koreksi").trim(),
                     natural = o.optString("lebih_natural").trim(),
                     raw = raw
@@ -408,7 +493,7 @@ private fun parseReply(raw: String): AiReply {
             // jawaban bukan JSON, pakai teks apa adanya
         }
     }
-    return AiReply(reply = s, koreksi = "", natural = "", raw = raw)
+    return AiReply(reply = s, translation = "", koreksi = "", natural = "", raw = raw)
 }
 
 private fun cleanModel(model: String): String =
@@ -537,6 +622,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val speaker = ChatSpeaker(application)
     private var idCounter = 1L
     private var sessionNo = 0
+    private var callRetries = 0
 
     private val _chat = MutableStateFlow(ChatState())
     val chat: StateFlow<ChatState> = _chat
@@ -552,17 +638,61 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         .map { prefs -> (prefs[KEY_MODEL] ?: "").ifBlank { DEFAULT_MODEL } }
         .stateIn(viewModelScope, SharingStarted.Eagerly, DEFAULT_MODEL)
 
+    val accent: StateFlow<String> = application.chatDataStore.data
+        .map { prefs -> prefs[KEY_ACCENT] ?: "en-US" }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, "en-US")
+
+    val rate: StateFlow<String> = application.chatDataStore.data
+        .map { prefs -> prefs[KEY_RATE] ?: "1.0" }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, "1.0")
+
     private val voice = VoiceInput(
         context = application,
         onPartial = { text -> _chat.update { it.copy(partial = text) } },
         onFinal = { text -> handleVoiceResult(text) },
-        onFailure = { message ->
-            _chat.update { it.copy(listening = false, partial = "", notice = message) }
-        }
+        onFailure = { message, quiet -> handleVoiceFailure(message, quiet) }
     )
 
+    init {
+        speaker.doneCallback = {
+            viewModelScope.launch { handleSpeechDone() }
+        }
+        viewModelScope.launch {
+            app.chatDataStore.data.collect { prefs ->
+                val accentCode = prefs[KEY_ACCENT] ?: "en-US"
+                val speed = (prefs[KEY_RATE] ?: "1.0").toFloatOrNull() ?: 1.0f
+                speaker.configure(accentCode, speed)
+            }
+        }
+    }
+
+    // ----- suara -----
+
+    private fun say(text: String, id: String) {
+        _chat.update { it.copy(speaking = true) }
+        val started = speaker.speak(text, id)
+        if (!started) handleSpeechDone()
+    }
+
+    private fun handleSpeechDone() {
+        _chat.update { it.copy(speaking = false) }
+        val s = _chat.value
+        if (s.callMode && !s.loading && !s.listening) {
+            beginCallListening()
+        }
+    }
+
+    private fun beginCallListening() {
+        if (!voice.isAvailable()) {
+            endCall("Pengenalan suara tidak tersedia di HP ini.")
+            return
+        }
+        _chat.update { it.copy(listening = true, partial = "", notice = "") }
+        voice.start()
+    }
+
     fun speak(text: String) {
-        speaker.speak(text)
+        say(text, "manual")
     }
 
     fun setNotice(text: String) {
@@ -570,24 +700,47 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setSpeakReplies(on: Boolean) {
-        if (!on) speaker.stop()
-        _chat.update { it.copy(speakReplies = on) }
+        if (!on) {
+            speaker.stop()
+            _chat.update { it.copy(speaking = false, speakReplies = false) }
+        } else {
+            _chat.update { it.copy(speakReplies = true) }
+        }
     }
+
+    fun saveVoice(accentCode: String, speed: String) {
+        viewModelScope.launch {
+            app.chatDataStore.edit { prefs ->
+                prefs[KEY_ACCENT] = accentCode
+                prefs[KEY_RATE] = speed
+            }
+        }
+    }
+
+    // ----- percakapan -----
 
     fun startTopic(topic: ChatTopic) {
         sessionNo++
-        val opening = ChatMessage(id = idCounter++, fromUser = false, text = topic.opening)
+        callRetries = 0
+        val opening = ChatMessage(
+            id = idCounter++,
+            fromUser = false,
+            text = topic.opening,
+            terjemahan = topic.openingId
+        )
         _chat.update {
             it.copy(
                 topic = topic,
                 messages = listOf(opening),
                 loading = false,
                 listening = false,
+                speaking = false,
+                callMode = false,
                 partial = "",
                 notice = ""
             )
         }
-        if (_chat.value.speakReplies) speaker.speak(topic.opening)
+        if (_chat.value.speakReplies) say(topic.opening, "opening")
     }
 
     fun resetConversation() {
@@ -599,13 +752,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun startListening() {
         speaker.stop()
+        callRetries = 0
         if (!voice.isAvailable()) {
             _chat.update {
-                it.copy(notice = "Pengenalan suara tidak tersedia di HP ini. Kamu tetap bisa mengetik.")
+                it.copy(
+                    speaking = false,
+                    notice = "Pengenalan suara tidak tersedia di HP ini. Kamu tetap bisa mengetik."
+                )
             }
             return
         }
-        _chat.update { it.copy(listening = true, partial = "", notice = "") }
+        _chat.update { it.copy(listening = true, speaking = false, partial = "", notice = "") }
         voice.start()
     }
 
@@ -614,9 +771,66 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun handleVoiceResult(text: String) {
+        callRetries = 0
         _chat.update { it.copy(listening = false, partial = "", notice = "") }
         send(text)
     }
+
+    private fun handleVoiceFailure(message: String, quiet: Boolean) {
+        _chat.update { it.copy(listening = false, partial = "", notice = message) }
+        if (!_chat.value.callMode) return
+        if (quiet && callRetries < 2) {
+            callRetries++
+            viewModelScope.launch {
+                delay(600)
+                val now = _chat.value
+                if (now.callMode && !now.listening && !now.loading && !now.speaking) {
+                    beginCallListening()
+                }
+            }
+        } else {
+            callRetries = 0
+            _chat.update {
+                it.copy(notice = message + " Panggilan dijeda. Ketuk 🎙 Bicara untuk lanjut.")
+            }
+        }
+    }
+
+    // ----- panggilan suara -----
+
+    fun startCall() {
+        val s = _chat.value
+        if (s.topic == null) return
+        callRetries = 0
+        _chat.update { it.copy(callMode = true, speakReplies = true, notice = "") }
+        if (s.loading) return
+        val lastAi = s.messages.lastOrNull { !it.fromUser && !it.isError }
+        if (lastAi != null) {
+            say(lastAi.text, "call")
+        } else {
+            beginCallListening()
+        }
+    }
+
+    fun endCall(reason: String = "") {
+        voice.stop()
+        speaker.stop()
+        _chat.update {
+            it.copy(
+                callMode = false,
+                listening = false,
+                speaking = false,
+                partial = "",
+                notice = reason
+            )
+        }
+    }
+
+    fun endCallIfActive() {
+        if (_chat.value.callMode) endCall()
+    }
+
+    // ----- kirim pesan -----
 
     private fun addError(message: String) {
         val err = ChatMessage(id = idCounter++, fromUser = false, text = message, isError = true)
@@ -644,6 +858,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             if (key.isEmpty()) {
                 if (mySession == sessionNo) {
                     addError("Belum ada API key. Buka tab Setelan, isi API key Gemini, lalu coba lagi.")
+                    if (_chat.value.callMode) endCall("Panggilan dihentikan.")
                 }
                 return@launch
             }
@@ -654,6 +869,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val reply = outcome.reply
             if (reply == null) {
                 addError(outcome.error ?: "Terjadi kesalahan yang tidak diketahui.")
+                if (_chat.value.callMode) endCall("Panggilan dihentikan karena ada error.")
                 return@launch
             }
 
@@ -661,6 +877,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 id = idCounter++,
                 fromUser = false,
                 text = reply.reply,
+                terjemahan = reply.translation,
                 koreksi = reply.koreksi,
                 lebihNatural = reply.natural,
                 raw = reply.raw,
@@ -676,7 +893,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             _chat.update {
                 it.copy(messages = it.messages + aiMsg, loading = false, notice = info)
             }
-            if (_chat.value.speakReplies) speaker.speak(reply.reply)
+            if (_chat.value.speakReplies) {
+                say(reply.reply, "reply")
+            } else if (_chat.value.callMode) {
+                handleSpeechDone()
+            }
             markConversationIfEnough()
         }
     }
@@ -734,6 +955,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
     }
+
+    // ----- setelan -----
 
     fun saveSettings(key: String, modelName: String) {
         viewModelScope.launch {
@@ -802,11 +1025,11 @@ private fun TopicPicker(
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Text("Ngobrol dengan AI", style = MaterialTheme.typography.headlineMedium)
         Text(
-            "Pilih topik, lalu bicara (🎙) atau ketik. AI menjawab dengan teks dan suara, lalu memberi koreksi singkat.",
+            "Pilih topik, lalu bicara (🎙), ketik, atau ketuk 📞 untuk panggilan suara. AI menjawab dengan teks dan suara, lalu memberi koreksi singkat.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -829,8 +1052,25 @@ private fun TopicPicker(
             }
         }
 
-        ChatTopic.entries.forEach { topic ->
+        Text("Obrolan", style = MaterialTheme.typography.titleMedium)
+        ChatTopic.entries.filter { !it.roleplay }.forEach { topic ->
             Button(
+                onClick = { onPick(topic) },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(vertical = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(topic.label, style = MaterialTheme.typography.titleMedium)
+                    Text(topic.hint, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+
+        Text("Role-play (berpura-pura di situasi nyata)", style = MaterialTheme.typography.titleMedium)
+        ChatTopic.entries.filter { it.roleplay }.forEach { topic ->
+            OutlinedButton(
                 onClick = { onPick(topic) },
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -862,22 +1102,51 @@ private fun ConversationView(vm: ChatViewModel, chat: ChatState) {
         }
     }
 
+    val callLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            vm.startCall()
+        } else {
+            vm.setNotice("Izin mikrofon ditolak. Aktifkan di Setelan HP, Aplikasi, Learn English Practice, Izin.")
+        }
+    }
+
     LaunchedEffect(chat.messages.size, chat.loading) {
         if (chat.messages.isNotEmpty()) {
             listState.animateScrollToItem(chat.messages.size - 1)
         }
     }
 
+    DisposableEffect(Unit) {
+        onDispose { vm.endCallIfActive() }
+    }
+
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) {
+        vm.endCallIfActive()
+    }
+
+    fun hasMicPermission(): Boolean =
+        ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+
     fun onMicClick() {
         if (chat.listening) {
             vm.stopListening()
-        } else if (
-            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
-            PackageManager.PERMISSION_GRANTED
-        ) {
+        } else if (hasMicPermission()) {
             vm.startListening()
         } else {
             micLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    fun onCallClick() {
+        if (chat.callMode) {
+            vm.endCall()
+        } else if (hasMicPermission()) {
+            vm.startCall()
+        } else {
+            callLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }
     }
 
@@ -893,11 +1162,24 @@ private fun ConversationView(vm: ChatViewModel, chat: ChatState) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             TextButton(onClick = { vm.resetConversation() }) { Text("← Topik") }
-            Text(chat.topic?.label ?: "", style = MaterialTheme.typography.titleSmall)
-            TextButton(onClick = { vm.setSpeakReplies(!chat.speakReplies) }) {
-                Text(if (chat.speakReplies) "🔊 Nyala" else "🔇 Mati")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { onCallClick() }) {
+                    Text(if (chat.callMode) "📵 Akhiri" else "📞 Panggilan")
+                }
+                TextButton(
+                    onClick = { vm.setSpeakReplies(!chat.speakReplies) },
+                    enabled = !chat.callMode
+                ) {
+                    Text(if (chat.speakReplies) "🔊" else "🔇")
+                }
             }
         }
+        Text(
+            chat.topic?.label ?: "",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 12.dp, bottom = 4.dp)
+        )
 
         LazyColumn(
             state = listState,
@@ -923,54 +1205,98 @@ private fun ConversationView(vm: ChatViewModel, chat: ChatState) {
                 modifier = Modifier.padding(top = 4.dp)
             )
         }
-        if (chat.loading) {
-            Text(
-                "AI sedang menulis… (kalau Google sibuk, aplikasi mencoba ulang sendiri)",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 4.dp)
-            )
-        }
-        if (chat.listening) {
-            Text(
-                "🎙 Mendengarkan… bicaralah dalam bahasa Inggris, ketuk ⏹ kalau sudah selesai",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(top = 4.dp)
-            )
-        }
 
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            OutlinedTextField(
-                value = if (chat.listening) chat.partial else input,
-                onValueChange = { input = it },
-                modifier = Modifier.weight(1f),
-                placeholder = { Text("Ketik atau ketuk 🎙") },
-                maxLines = 3,
-                enabled = !chat.listening
-            )
-            OutlinedButton(
-                onClick = { onMicClick() },
-                enabled = !chat.loading || chat.listening,
-                contentPadding = PaddingValues(horizontal = 12.dp)
-            ) {
-                Text(if (chat.listening) "⏹" else "🎙")
+        if (chat.callMode) {
+            val status = when {
+                chat.loading -> "AI sedang berpikir… (kalau Google sibuk, aplikasi mencoba ulang sendiri)"
+                chat.listening ->
+                    if (chat.partial.isBlank()) "🎙 Giliranmu, bicaralah dalam bahasa Inggris…"
+                    else "🎙 " + chat.partial
+                chat.speaking -> "🔊 AI sedang berbicara…"
+                else -> "Panggilan dijeda. Ketuk 🎙 Bicara untuk lanjut."
             }
-            Button(
-                onClick = {
-                    vm.send(input)
-                    input = ""
-                },
-                enabled = input.isNotBlank() && !chat.loading && !chat.listening,
-                contentPadding = PaddingValues(horizontal = 12.dp)
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)
             ) {
-                Text("Kirim")
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text("📞 Panggilan suara aktif", style = MaterialTheme.typography.titleSmall)
+                    Text(status, style = MaterialTheme.typography.bodyMedium)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = { onMicClick() },
+                            enabled = chat.listening || (!chat.loading && !chat.speaking),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(if (chat.listening) "⏹ Selesai bicara" else "🎙 Bicara")
+                        }
+                        Button(
+                            onClick = { vm.endCall() },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Akhiri")
+                        }
+                    }
+                }
+            }
+        } else {
+            if (chat.loading) {
+                Text(
+                    "AI sedang menulis… (kalau Google sibuk, aplikasi mencoba ulang sendiri)",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+            if (chat.listening) {
+                Text(
+                    "🎙 Mendengarkan… bicaralah dalam bahasa Inggris, ketuk ⏹ kalau sudah selesai",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = if (chat.listening) chat.partial else input,
+                    onValueChange = { input = it },
+                    modifier = Modifier.weight(1f),
+                    placeholder = { Text("Ketik atau ketuk 🎙") },
+                    maxLines = 3,
+                    enabled = !chat.listening
+                )
+                OutlinedButton(
+                    onClick = { onMicClick() },
+                    enabled = !chat.loading || chat.listening,
+                    contentPadding = PaddingValues(horizontal = 12.dp)
+                ) {
+                    Text(if (chat.listening) "⏹" else "🎙")
+                }
+                Button(
+                    onClick = {
+                        vm.send(input)
+                        input = ""
+                    },
+                    enabled = input.isNotBlank() && !chat.loading && !chat.listening,
+                    contentPadding = PaddingValues(horizontal = 12.dp)
+                ) {
+                    Text("Kirim")
+                }
             }
         }
     }
@@ -982,6 +1308,7 @@ private fun MessageItem(
     onSpeak: (String) -> Unit,
     onSave: () -> Unit
 ) {
+    var showTranslation by remember(msg.id) { mutableStateOf(false) }
     val align = if (msg.fromUser) Alignment.CenterEnd else Alignment.CenterStart
     val colors = when {
         msg.isError -> CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
@@ -998,7 +1325,21 @@ private fun MessageItem(
                 Column(modifier = Modifier.padding(12.dp)) {
                     Text(msg.text, style = MaterialTheme.typography.bodyLarge)
                     if (!msg.fromUser && !msg.isError) {
-                        TextButton(onClick = { onSpeak(msg.text) }) { Text("🔊 Dengar") }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            TextButton(onClick = { onSpeak(msg.text) }) { Text("🔊 Dengar") }
+                            if (msg.terjemahan.isNotBlank()) {
+                                TextButton(onClick = { showTranslation = !showTranslation }) {
+                                    Text(if (showTranslation) "Sembunyikan" else "🌐 Terjemahkan")
+                                }
+                            }
+                        }
+                        if (showTranslation && msg.terjemahan.isNotBlank()) {
+                            Text(
+                                msg.terjemahan,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 }
             }
@@ -1039,6 +1380,8 @@ fun SettingsScreen(vm: ChatViewModel) {
     val context = LocalContext.current
     val savedKey by vm.apiKey.collectAsStateWithLifecycle()
     val savedModel by vm.model.collectAsStateWithLifecycle()
+    val accent by vm.accent.collectAsStateWithLifecycle()
+    val rate by vm.rate.collectAsStateWithLifecycle()
     val ui by vm.settingsUi.collectAsStateWithLifecycle()
 
     var key by remember(savedKey) { mutableStateOf(savedKey) }
@@ -1138,6 +1481,68 @@ fun SettingsScreen(vm: ChatViewModel) {
         }
         if (ui.message.isNotEmpty()) {
             Text(ui.message, style = MaterialTheme.typography.bodyMedium)
+        }
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text("Suara AI", style = MaterialTheme.typography.titleMedium)
+                Text("Aksen", style = MaterialTheme.typography.bodyMedium)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    listOf("en-US" to "Amerika", "en-GB" to "Inggris", "en-AU" to "Australia")
+                        .forEach { (code, label) ->
+                            if (accent == code) {
+                                Button(
+                                    onClick = { vm.saveVoice(code, rate) },
+                                    modifier = Modifier.weight(1f),
+                                    contentPadding = PaddingValues(horizontal = 4.dp)
+                                ) { Text(label) }
+                            } else {
+                                OutlinedButton(
+                                    onClick = { vm.saveVoice(code, rate) },
+                                    modifier = Modifier.weight(1f),
+                                    contentPadding = PaddingValues(horizontal = 4.dp)
+                                ) { Text(label) }
+                            }
+                        }
+                }
+                Text("Kecepatan bicara", style = MaterialTheme.typography.bodyMedium)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    listOf("0.8" to "Pelan", "1.0" to "Normal")
+                        .forEach { (value, label) ->
+                            if (rate == value) {
+                                Button(
+                                    onClick = { vm.saveVoice(accent, value) },
+                                    modifier = Modifier.weight(1f)
+                                ) { Text(label) }
+                            } else {
+                                OutlinedButton(
+                                    onClick = { vm.saveVoice(accent, value) },
+                                    modifier = Modifier.weight(1f)
+                                ) { Text(label) }
+                            }
+                        }
+                }
+                OutlinedButton(
+                    onClick = { vm.speak("Hello! This is how I sound. Nice to meet you.") },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("🔊 Tes suara")
+                }
+                Text(
+                    "Kalau aksen terpilih belum terpasang di HP, suara otomatis memakai Amerika.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
 
         Card(modifier = Modifier.fillMaxWidth()) {
