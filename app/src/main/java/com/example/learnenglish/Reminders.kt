@@ -39,17 +39,26 @@ object Reminders {
     private const val NOTIFICATION_ID = 1001
     private const val PREFS = "reminder_prefs"
     private const val KEY_HOUR = "hour"
+    private const val KEY_MINUTE = "minute"
     private const val DEFAULT_HOUR = 19
 
     fun getHour(context: Context): Int =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(KEY_HOUR, DEFAULT_HOUR)
 
-    fun setHour(context: Context, hour: Int) {
+    fun getMinute(context: Context): Int =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(KEY_MINUTE, 0)
+
+    fun setTime(context: Context, hour: Int, minute: Int) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit()
             .putInt(KEY_HOUR, hour.coerceIn(0, 23))
+            .putInt(KEY_MINUTE, minute.coerceIn(0, 59))
             .apply()
         schedule(context, replace = true)
+    }
+
+    fun setHour(context: Context, hour: Int) {
+        setTime(context, hour, getMinute(context))
     }
 
     fun createChannel(context: Context) {
@@ -65,7 +74,7 @@ object Reminders {
 
     fun schedule(context: Context, replace: Boolean = false) {
         val now = LocalDateTime.now()
-        var next = now.toLocalDate().atTime(getHour(context), 0)
+        var next = now.toLocalDate().atTime(getHour(context), getMinute(context))
         if (!next.isAfter(now)) {
             next = next.plusDays(1)
         }
