@@ -35,6 +35,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -147,6 +148,7 @@ class MainActivity : ComponentActivity() {
 }
 
 private const val ROUTE_TODAY = "today"
+private const val ROUTE_ACHIEVEMENTS = "achievements"
 
 private enum class Tab(val route: String, val label: String, val icon: ImageVector) {
     Chat("chat", "Chat", Icons.Filled.Face),
@@ -176,8 +178,14 @@ fun AppRoot() {
     val vocabVm: VocabViewModel = viewModel()
     val notesVm: NotesViewModel = viewModel()
     val chatVm: ChatViewModel = viewModel()
+    val achVm: AchievementsViewModel = viewModel()
     val rows by progressVm.rows.collectAsStateWithLifecycle()
+    val ach by achVm.state.collectAsStateWithLifecycle()
     val stats = computeStats(rows, LocalDate.now())
+
+    LaunchedEffect(Unit) {
+        achVm.attach(chatVm.chat)
+    }
 
     Scaffold(
         bottomBar = {
@@ -201,7 +209,16 @@ fun AppRoot() {
             composable(ROUTE_TODAY) {
                 TodayScreen(
                     stats = stats,
-                    onStartPractice = { navigateToTab(navController, Tab.Chat.route) }
+                    level = ach.level,
+                    xp = ach.xp,
+                    onStartPractice = { navigateToTab(navController, Tab.Chat.route) },
+                    onOpenAchievements = { navController.navigate(ROUTE_ACHIEVEMENTS) }
+                )
+            }
+            composable(ROUTE_ACHIEVEMENTS) {
+                AchievementsScreen(
+                    vm = achVm,
+                    onBack = { navController.popBackStack() }
                 )
             }
             composable(Tab.Chat.route) {
@@ -227,7 +244,13 @@ fun AppRoot() {
 }
 
 @Composable
-fun TodayScreen(stats: ProgressStats, onStartPractice: () -> Unit) {
+fun TodayScreen(
+    stats: ProgressStats,
+    level: Int,
+    xp: Int,
+    onStartPractice: () -> Unit,
+    onOpenAchievements: () -> Unit
+) {
     var now by remember { mutableStateOf(LocalDateTime.now()) }
     LaunchedEffect(Unit) {
         while (true) {
@@ -348,6 +371,13 @@ fun TodayScreen(stats: ProgressStats, onStartPractice: () -> Unit) {
                 .fillMaxWidth()
                 .height(10.dp)
         )
+
+        OutlinedButton(
+            onClick = onOpenAchievements,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("🏅 Level $level · $xp XP — lihat pencapaian")
+        }
     }
 }
 
