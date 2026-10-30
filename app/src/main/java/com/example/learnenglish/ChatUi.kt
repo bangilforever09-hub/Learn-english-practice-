@@ -183,6 +183,7 @@ private fun ConversationPage(vm: ChatViewModel, chat: ChatState) {
     val context = LocalContext.current
     val listState = rememberLazyListState()
     var input by remember { mutableStateOf("") }
+    var showAvatar by remember { mutableStateOf(false) }
 
     val micLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -260,6 +261,9 @@ private fun ConversationPage(vm: ChatViewModel, chat: ChatState) {
                 TextButton(onClick = { onCallClick() }) {
                     Text(if (chat.callMode) "📵 Akhiri" else "📞 Panggilan")
                 }
+                TextButton(onClick = { showAvatar = !showAvatar }) {
+                    Text("🎭")
+                }
                 TextButton(
                     onClick = { vm.setSpeakReplies(!chat.speakReplies) },
                     enabled = !chat.callMode
@@ -280,6 +284,16 @@ private fun ConversationPage(vm: ChatViewModel, chat: ChatState) {
                     style = MaterialTheme.typography.labelLarge
                 )
             }
+        }
+
+        if (chat.callMode || showAvatar) {
+            val mood = when {
+                chat.listening -> AvatarMood.Listening
+                chat.loading -> AvatarMood.Thinking
+                chat.speaking -> AvatarMood.Speaking
+                else -> AvatarMood.Idle
+            }
+            CharacterPanel(mood = mood, modifier = Modifier.padding(vertical = 6.dp))
         }
 
         LazyColumn(
