@@ -151,6 +151,7 @@ class MainActivity : ComponentActivity() {
 private const val ROUTE_TODAY = "today"
 private const val ROUTE_ACHIEVEMENTS = "achievements"
 private const val ROUTE_SPEAKING = "speaking"
+private const val ROUTE_PATH = "path"
 
 private enum class Tab(val route: String, val label: String, val icon: ImageVector) {
     Chat("chat", "Chat", Icons.Filled.Face),
@@ -182,8 +183,10 @@ fun AppRoot() {
     val chatVm: ChatViewModel = viewModel()
     val achVm: AchievementsViewModel = viewModel()
     val speakVm: SpeakingViewModel = viewModel()
+    val pathVm: PathViewModel = viewModel()
     val rows by progressVm.rows.collectAsStateWithLifecycle()
     val ach by achVm.state.collectAsStateWithLifecycle()
+    val pathDone by pathVm.done.collectAsStateWithLifecycle()
     val stats = computeStats(rows, LocalDate.now())
 
     LaunchedEffect(Unit) {
@@ -214,11 +217,14 @@ fun AppRoot() {
                     stats = stats,
                     level = ach.level,
                     xp = ach.xp,
+                    pathDay = pathCurrentDay(pathDone),
+                    pathCompleted = pathCompletedCount(pathDone),
                     onStartPractice = { navigateToTab(navController, Tab.Chat.route) },
                     onOpenChat = { navigateToTab(navController, Tab.Chat.route) },
                     onOpenPractice = { navigateToTab(navController, Tab.Practice.route) },
                     onOpenNotes = { navigateToTab(navController, Tab.Notes.route) },
                     onOpenSpeaking = { navController.navigate(ROUTE_SPEAKING) },
+                    onOpenPath = { navController.navigate(ROUTE_PATH) },
                     onOpenAchievements = { navController.navigate(ROUTE_ACHIEVEMENTS) }
                 )
             }
@@ -232,6 +238,19 @@ fun AppRoot() {
                 SpeakingPage(
                     vm = speakVm,
                     chatVm = chatVm,
+                    onBack = { navController.popBackStack() }
+                )
+            }
+            composable(ROUTE_PATH) {
+                PathPage(
+                    vm = pathVm,
+                    onSpeak = { chatVm.speak(it) },
+                    onOpenPractice = { navigateToTab(navController, Tab.Practice.route) },
+                    onOpenSpeaking = { navController.navigate(ROUTE_SPEAKING) },
+                    onStartChat = { topic ->
+                        chatVm.startTopic(topic)
+                        navigateToTab(navController, Tab.Chat.route)
+                    },
                     onBack = { navController.popBackStack() }
                 )
             }
@@ -302,11 +321,14 @@ fun TodayScreen(
     stats: ProgressStats,
     level: Int,
     xp: Int,
+    pathDay: Int,
+    pathCompleted: Int,
     onStartPractice: () -> Unit,
     onOpenChat: () -> Unit,
     onOpenPractice: () -> Unit,
     onOpenNotes: () -> Unit,
     onOpenSpeaking: () -> Unit,
+    onOpenPath: () -> Unit,
     onOpenAchievements: () -> Unit
 ) {
     var now by remember { mutableStateOf(LocalDateTime.now()) }
@@ -389,6 +411,36 @@ fun TodayScreen(
                 .height(88.dp)
         ) {
             Text("Mulai Latihan", style = MaterialTheme.typography.headlineSmall)
+        }
+
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onOpenPath),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.primaryContainer
+            )
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text("🗺️ Jalur belajar $PATH_DAYS hari", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Hari ke-$pathDay: ${pathDayTitle(pathDay)}",
+                    style = MaterialTheme.typography.bodyLarge
+                )
+                LinearProgressIndicator(
+                    progress = { pathCompleted / PATH_DAYS.toFloat() },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(8.dp)
+                )
+                Text(
+                    "$pathCompleted dari $PATH_DAYS hari selesai · ketuk untuk membuka misi hari ini",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
         }
 
         Row(
