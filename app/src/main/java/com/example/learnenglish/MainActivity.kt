@@ -150,6 +150,7 @@ class MainActivity : ComponentActivity() {
 
 private const val ROUTE_TODAY = "today"
 private const val ROUTE_ACHIEVEMENTS = "achievements"
+private const val ROUTE_SPEAKING = "speaking"
 
 private enum class Tab(val route: String, val label: String, val icon: ImageVector) {
     Chat("chat", "Chat", Icons.Filled.Face),
@@ -180,6 +181,7 @@ fun AppRoot() {
     val notesVm: NotesViewModel = viewModel()
     val chatVm: ChatViewModel = viewModel()
     val achVm: AchievementsViewModel = viewModel()
+    val speakVm: SpeakingViewModel = viewModel()
     val rows by progressVm.rows.collectAsStateWithLifecycle()
     val ach by achVm.state.collectAsStateWithLifecycle()
     val stats = computeStats(rows, LocalDate.now())
@@ -216,12 +218,20 @@ fun AppRoot() {
                     onOpenChat = { navigateToTab(navController, Tab.Chat.route) },
                     onOpenPractice = { navigateToTab(navController, Tab.Practice.route) },
                     onOpenNotes = { navigateToTab(navController, Tab.Notes.route) },
+                    onOpenSpeaking = { navController.navigate(ROUTE_SPEAKING) },
                     onOpenAchievements = { navController.navigate(ROUTE_ACHIEVEMENTS) }
                 )
             }
             composable(ROUTE_ACHIEVEMENTS) {
                 AchievementsScreen(
                     vm = achVm,
+                    onBack = { navController.popBackStack() }
+                )
+            }
+            composable(ROUTE_SPEAKING) {
+                SpeakingPage(
+                    vm = speakVm,
+                    chatVm = chatVm,
                     onBack = { navController.popBackStack() }
                 )
             }
@@ -296,6 +306,7 @@ fun TodayScreen(
     onOpenChat: () -> Unit,
     onOpenPractice: () -> Unit,
     onOpenNotes: () -> Unit,
+    onOpenSpeaking: () -> Unit,
     onOpenAchievements: () -> Unit
 ) {
     var now by remember { mutableStateOf(LocalDateTime.now()) }
@@ -454,6 +465,19 @@ fun TodayScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+        }
+
+        Button(
+            onClick = onOpenSpeaking,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.tertiary,
+                contentColor = MaterialTheme.colorScheme.onTertiary
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp)
+        ) {
+            Text("🎤 Latihan ucapan")
         }
 
         OutlinedButton(
